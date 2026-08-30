@@ -3,11 +3,11 @@
   "layout": "canonical-paths",
   "source": {
     "branch": "sflow/config",
-    "commit": "a75463c5bfba2621ae78fe37153514363bd914c4"
+    "commit": "44dff878ed2af0b5a08b9aa390c4af333ecf9027"
   },
   "product": {
     "version": "0.9.0",
-    "revision": "5fd72160afe0e54d393c99f652dc69ef04377bc9"
+    "revision": "7f0581d592cd0edc674e0a0f022a00da731f1966"
   },
   "files": {
     ".github/agents/architect.agent.md": "da4f136ae11c0cb459500d4008a5629797f168ec4df87ba807da31c12a59c467",
@@ -117,6 +117,548 @@
     "singularity/templates/spec-driven/plan.md": "069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a",
     "singularity/templates/spec-driven/release.md": "ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908",
     "singularity/templates/spec-driven/spec.md": "27424a624b1dab57323fd7482ac62708bd42d11ba42e41c102f94e15182fe485",
-    "singularity/workflow.yml": "506971bbf458e81f55dbb0241abed8adb929b6aad49a2e1bc500f78a2a038f46"
+    "singularity/workflow.yml": "bc676cf23b37d825ef07110214580374e2dfe941c9fb8fc8c4f64a87eeef5e0a"
+  },
+  "assets": {
+    ".github/agents/architect.agent.md": {
+      "sha256": "da4f136ae11c0cb459500d4008a5629797f168ec4df87ba807da31c12a59c467",
+      "object": "0fbeab4d381916646609e8fad97e715881836abb",
+      "mode": "100644"
+    },
+    ".github/agents/developer.agent.md": {
+      "sha256": "669b82f0c0ddf8947dbccda1fd9f91ad2973e314e7a60d35012b94e103a3d72b",
+      "object": "19a8e635552fd6170ac5671b20143f67357b49c5",
+      "mode": "100644"
+    },
+    ".github/agents/mobile-architect.agent.md": {
+      "sha256": "afebe77fff23c5493852c2898a39410d115cae1f346256cbffcda9dd103bcf2b",
+      "object": "02e4f4fa727119d2717711b2579267fe2e8b0a01",
+      "mode": "100644"
+    },
+    ".github/agents/poc-analyst.agent.md": {
+      "sha256": "a5e8b6d7bd4daaa7eed58f5b4d5aec4985f53e8cc6b79f8b353f31a59c9b2099",
+      "object": "84e093b4d1176224a7f830eb921a553bdc12090b",
+      "mode": "100644"
+    },
+    ".github/agents/poc-automation.agent.md": {
+      "sha256": "293e8c404b05f4a2ba4465bbed0be5b828ae367df6e6263c7255235948e6bee2",
+      "object": "f129f7e41f5ee8603f0a85f274aa727b8362f760",
+      "mode": "100644"
+    },
+    ".github/agents/poc-explorer.agent.md": {
+      "sha256": "e20eb9f019128dce8d1a92842e19b368b012965c1abc5322ae22e57e223abcb8",
+      "object": "5948fc1548e517913177f96ba06ae0a41554bc29",
+      "mode": "100644"
+    },
+    ".github/agents/poc-test-developer.agent.md": {
+      "sha256": "c40ca16bd75bf3d201e4b324500a4623af322e707f25c5de46e64aebc49f4829",
+      "object": "0fd70482a2a8c479feaa548ebdcb098d85c1dea2",
+      "mode": "100644"
+    },
+    ".github/agents/poc-validator.agent.md": {
+      "sha256": "a7f8cbf15a2474f2bf4a6f959a95a49917f7a1df3b96b9cf0222ab2a3f8fb4c0",
+      "object": "a78d15f91da5cc14fdff08fb8fa747c5a3f68c81",
+      "mode": "100644"
+    },
+    ".github/agents/product-designer.agent.md": {
+      "sha256": "d865c816c41be1723bd2d3ef1e769f02821e2a45a75120119f50606a7a3d1fee",
+      "object": "0ecbf33bbb10e4d72b035aa6792a9667af62be49",
+      "mode": "100644"
+    },
+    ".github/agents/product-owner.agent.md": {
+      "sha256": "54c7240d0b81c04e47c453fd19a29caf358c07d3d36a93b84ff84541e7f9aeb0",
+      "object": "a0c8f49748b64357595c89ec553317ce932b193b",
+      "mode": "100644"
+    },
+    ".github/agents/qa.agent.md": {
+      "sha256": "3c0c9560c422fc616b391277b38d409b004864449b1a9cf4aa06bd5e302233e5",
+      "object": "f5516ba878001d757f6a5412ca7933de62c55ca1",
+      "mode": "100644"
+    },
+    "singularity/agent-mappings.yml": {
+      "sha256": "1b39a4f4caa3242749889a291e2259a361c815712bd762abde3db3cbe9f8a688",
+      "object": "701949f4a8a4ab0da2175415071aaf5298202da4",
+      "mode": "100644"
+    },
+    "singularity/capabilities.yml": {
+      "sha256": "2b0ea327914f01db6863a94c03e68e4730e6f1c4d45827136391b9aa256753d6",
+      "object": "12ad2cd8b65763ab9d93f5cdadf17cc9668e518c",
+      "mode": "100644"
+    },
+    "singularity/impact.yml": {
+      "sha256": "e91000c4f19ba8f8c08812ebea1d3e825919f5b31dadd1f3e22f1749e3b05313",
+      "object": "ca5caa426515a71bf583c5fe0fa0743e53d651d5",
+      "mode": "100644"
+    },
+    "singularity/modelTiers.yml": {
+      "sha256": "9c829dea6676d1ad6066197a582125ec049a7e42c62300736ec83cb2ba563449",
+      "object": "680f6158789753c793071da4cf8dd6bf8b4a156e",
+      "mode": "100644"
+    },
+    "singularity/portfolio.yml": {
+      "sha256": "59ebfc62bff76f61b3f1f0222a91e7a87e86bcdf4e76192ad7a41c1f185ea373",
+      "object": "e5a66c870d0e1f577b7522d60f5298359423d102",
+      "mode": "100644"
+    },
+    "singularity/prompts/copilot-planning.md": {
+      "sha256": "4128acc6930949e4ba1e50e8b8c7c4f7beb23f4361c2e8428475b081712b77db",
+      "object": "6dffb3072c8b121cd4b879cd457dd8219255ad42",
+      "mode": "100644"
+    },
+    "singularity/prompts/worldmodel-builder.md": {
+      "sha256": "cd93d41ccc98e4ccc09550c60cc79ad6c5a6004d7f8ea66cec596640ab73ffb4",
+      "object": "8cbd534258fb0bf3bc8d5a2739892a2b6bd0e943",
+      "mode": "100644"
+    },
+    "singularity/templates/benchmark/conformance.md": {
+      "sha256": "41484584d35ff0c2e214e8f9592b105bba95bc36b38dba919754b54380851a2b",
+      "object": "ea4199852aeb678b497e3d206412374491589c0b",
+      "mode": "100644"
+    },
+    "singularity/templates/benchmark/design.md": {
+      "sha256": "d7327667a93ea9a5e536032610b314bdd681144d1ef9c5762f04d34dca5dee51",
+      "object": "7051d5d6b3c91fb319a5abd8ced2ccff4e9dec53",
+      "mode": "100644"
+    },
+    "singularity/templates/benchmark/implementation.md": {
+      "sha256": "e25ab3d9104c4ddaef541191d544ea032c35f551b9538ad77a38628ca1a58db6",
+      "object": "a98648f553459a338918478a4e5ded57745aa23d",
+      "mode": "100644"
+    },
+    "singularity/templates/benchmark/intake.md": {
+      "sha256": "3a4a6c9b16d20e2b3b90930bc72c11fe63d74e241f9de3819674b6da460a0677",
+      "object": "1b2b44c626feda6785392b8e00d4c539b832e1fa",
+      "mode": "100644"
+    },
+    "singularity/templates/benchmark/testing.md": {
+      "sha256": "a9338f04dbe1be3ad988c331f9b45bab335a4661fb367f2c4f110609049fb9a8",
+      "object": "c0527d5ab81535622fc177c853a1cb3c531701db",
+      "mode": "100644"
+    },
+    "singularity/templates/bugfix/fix-design.md": {
+      "sha256": "cee7774777fd55a3740ebd9f2cafd100702d52617ae307f80e35764229c7867e",
+      "object": "4aca3357902805fb427b643363291e4e1e67a434",
+      "mode": "100644"
+    },
+    "singularity/templates/bugfix/fix-spec.md": {
+      "sha256": "68c6ce36d11ab08ec96a676f60d2f143321070a108fef804c552aae1f50776e0",
+      "object": "f82ccc3bcd3b5055a701c3757542863861be86e3",
+      "mode": "100644"
+    },
+    "singularity/templates/bugfix/intake.md": {
+      "sha256": "c0aa89555e400e9c78c782021b1928175607f32ad20773c70fae04b28ced320c",
+      "object": "5797d7354b7949905dc7339e11983713a5f04c73",
+      "mode": "100644"
+    },
+    "singularity/templates/bugfix/reproduction.md": {
+      "sha256": "083e0361f6ffe9e84905b21558554c8335ab1a036719cb37f104e03f255f3567",
+      "object": "399b2b59a0cfe1bccf338c551e3d9eca48a51bc0",
+      "mode": "100644"
+    },
+    "singularity/templates/chore/intake.md": {
+      "sha256": "d4632690fa411f3926eee1bfd474f5907aae5efdd31313576acdac04e8934441",
+      "object": "6c06b26cfaefe457a8198819b6926aa23aa74daf",
+      "mode": "100644"
+    },
+    "singularity/templates/common/conformance.md": {
+      "sha256": "dcb95249d8fef0dcdb87a6f012f09c481a47813e50f4e8dd96be207c81c15ada",
+      "object": "8a8e79f244d0fc0cac3ba6fcf254fb813adb4b2b",
+      "mode": "100644"
+    },
+    "singularity/templates/common/implementation.md": {
+      "sha256": "61cd7cba79a0dd2914a25b53496b8bd9c575c36219597d65b8ec10010e801d9c",
+      "object": "8f0ddef792dc846da1181323bdb855710863dac9",
+      "mode": "100644"
+    },
+    "singularity/templates/common/intake.md": {
+      "sha256": "e16cd8b47f472973823a1a53294c77ac6551285c4df75e916c739611c3bc1d23",
+      "object": "ecb861131e07e115b7c3832bddd5edee08c1e2fa",
+      "mode": "100644"
+    },
+    "singularity/templates/common/verification.md": {
+      "sha256": "46a93cccc0edf7b3d878f05f212ed68350c26cedb33d96b3c447ac38bde20c40",
+      "object": "861d9f9076762c3d6e8f94da4c6470b76aa3f511",
+      "mode": "100644"
+    },
+    "singularity/templates/feature/design.md": {
+      "sha256": "8b7455f464a7025efa92942c272a04e3c0a3ab2a4d3eb438703cc14e230bc856",
+      "object": "4eae66db0f48eb6b2c096d4f15dbaa0b46cc7355",
+      "mode": "100644"
+    },
+    "singularity/templates/feature/implementation-spec.md": {
+      "sha256": "f6b06a7e8c8dfa87a7f1289b2a80c0a6e98f5ee8e3cae2fe9faed501c031656c",
+      "object": "345ccc99270d384bd3fad073f81c4c3733a1ac6f",
+      "mode": "100644"
+    },
+    "singularity/templates/feature/intake.md": {
+      "sha256": "eb53814f46f12ea3d93d1629164bd7ff22a3a54feceff7f7dd55670caeb5dbab",
+      "object": "b5fa2e40ed27bdbc1829e5e96c5443021530da88",
+      "mode": "100644"
+    },
+    "singularity/templates/feature/requirements.md": {
+      "sha256": "32016db8ed6fadd6596e7dc702647cff95cdee1a203b38395d7ba5626dd8134e",
+      "object": "ab67dfec66842ca790481423a916e4078c3e42c6",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/component-mapping.md": {
+      "sha256": "cdea8a1e3defa73ade72bdaaac162ecd9b8b43817aa319d7e712e2de2eb296a3",
+      "object": "97320deb9427fc4206029578dfaa60c8ba8c98d0",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/conformance.md": {
+      "sha256": "b3f2c36f238e847fafb1e1de2647f57d9516f1cac8b71d179333985d63340a83",
+      "object": "04b61331842668df5b28d4f0ddefb072271c29d5",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/design-intake.md": {
+      "sha256": "f84db46cdf86cf8c4da4de0062d7150466d5dd291baf6495bd9523affa9a6453",
+      "object": "6d7b3a16eb55a852c2a402c74f6e03b2a3af5a69",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/design-inventory.md": {
+      "sha256": "822ea61a75a25ec5a6b42dd887c842d5126233b36f7f0fc875402f9a43125079",
+      "object": "1e80db923fae1a5c0584738d7fea3df2ffcb10a3",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/implementation.md": {
+      "sha256": "69b5b75886dcc41da4e3063c7ceb6ff805251f98dd40ee41b2bf5de660dc74da",
+      "object": "ba4b231b299b9cfd87dee20ef502a982011d17bd",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/mobile-spec.md": {
+      "sha256": "88b61e823b202feb62b8c1eccbe09fdc0b78c3b68d1f20f24adb4e3d16098cee",
+      "object": "2fa940ddf88dfba36e59cf51dd508dbf8be1d2b6",
+      "mode": "100644"
+    },
+    "singularity/templates/figma-mobile/visual-verification.md": {
+      "sha256": "aca2f864d6cc1b5321e466f80d0751ab4874049271b2fabab03dde7b0ec0e835",
+      "object": "2a2daa2bd55619f860fc6e1c433fd48018d3816d",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/adr-log.md": {
+      "sha256": "4ece55ac194e15395cbc331d382d6464f76e013b33576050895092a5dcebce12",
+      "object": "7582eeb4bba16e974915adba18c5d41a45401dc9",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/business-case.md": {
+      "sha256": "155faec79961574f8dd12556f0874ec8bb396f5a546ca792b2ab41dc34aa6a17",
+      "object": "ab792086da78d2550325b52759f6d71a951ade3a",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/cicd-readiness.md": {
+      "sha256": "98222239a8e316ff1413f827f1fe400d90345bb0759db5d06fe49f859e2aa754",
+      "object": "0647797e1f87c423cd9db887d66681378617bae2",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/compliance-assessment.md": {
+      "sha256": "88645356dc868b46a78dabc50f2605b28e0ed0d9b78549e7cf9fef6536ea2296",
+      "object": "e53c626bb6b10a740b0fd28cad8372ca8a1e0fc1",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/data-readiness.md": {
+      "sha256": "9b39c24e75f253e461fdf45150378a62599ba5782fb1a1721b1b6f66ba9b2dfe",
+      "object": "1d935ea61786ba93a1589edb4a65de9822e54629",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/data-source-decision.md": {
+      "sha256": "49b76f3f576c6660696a6504e7bfdd78737089c26b540be5ea7f638ea800189c",
+      "object": "2766eee97a606284e975987eb445547ebae37727",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/dependency-matrix.md": {
+      "sha256": "890fef7b2cae6c11927137161755c4a9cfba8f13fdd7aca73b58ba8ef5ff1b7e",
+      "object": "730cfff5f32676ad9bf6da7a5b81d7ce62031e3b",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/deployment-record.md": {
+      "sha256": "1898365f596234fa78fd9b6330c9cc5e7ed50be566b998e7f8ec8f76f294db85",
+      "object": "6158e6adca8f6de77a94cc2fb705ebdc6c43a804",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/design-specification.md": {
+      "sha256": "341c2ebad1e5945a011906e451c2b7290fc806e35e6a531bbc39a9b87bf11a5e",
+      "object": "1ef4acc42d1a9d279532075113501b8c52ce20d0",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic-record.yml": {
+      "sha256": "9ca4bdb695a7cd07633746cbe8245a2e170315e09b3dd10a252684a25671ad94",
+      "object": "cb412bde626d1baf17bae2a795b6d69f92aef086",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/impact-analysis.yml": {
+      "sha256": "b8f435bbc0bcab91cc1af9e32966600a8c9ccb84ca7a325baeeb3aadbc14e3f9",
+      "object": "586710e95b579e9b0c599c5de948e2837096eee7",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/jira-write-plan.yml": {
+      "sha256": "176c8c177d77e61df465472bdb5b9bfb67a9a3183e13e4704aafa1f4931e48e9",
+      "object": "70805ed992aab7a800ef33e09a6c929d53b0bc18",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/materialization-report.md": {
+      "sha256": "18bdd184358ac5f1f08f4e0edda9e09bab7dab8b8dcbfe7a65a2e4196e99001c",
+      "object": "83877352251be3154137c2b1df196c0f977b5c21",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/parent-spec.md": {
+      "sha256": "4c80b3cb91962fd1b1fe64f01bd7dc4b0ed14ec7fb889750cabf1522eaabfa72",
+      "object": "22a35bc05474071397575215ea3a65d0e58aaf1c",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/repository-map.yml": {
+      "sha256": "cb60767c53bc9bd0c6439e2b74310c050fef821a57183d15425c73cb55b25584",
+      "object": "8aaead10bc7377e6a52fdf3f5e99db54fa2da13c",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/requirements-traceability.yml": {
+      "sha256": "672a8ccb13f2945e9043e325f7fe0538bddfe8a43d3bf07864bee7937b680b73",
+      "object": "f83f347cebcc913dba795df2b4e8acca6cd0f59f",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/requirements.md": {
+      "sha256": "174d57ca16c5b43a23c6292873c683335f9fb08c6efd6d0a7bf6e6594aa5ec0b",
+      "object": "84ba59cf7482d8b4a9aa291329eaecac23733300",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/story-plan.yml": {
+      "sha256": "9ff2b979d06de8302c36ef0e1898c1c74df6f0dd92df64c1b68accdf360b555f",
+      "object": "8b92e3f97ba2035d0cadce868e831648a263f7fa",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/story-spec-index.yml": {
+      "sha256": "3aeff575724e8b53fd1bf7cb0a01a41280c99ee714920b637c317aaf5cf88526",
+      "object": "15048e36197dcb251631ea9ed13dd882f2b72b95",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/epic/story-spec.md": {
+      "sha256": "ee2791700162ce5b843ce9458bd8e2b6580b97d2e6db4343fafc5cc64ec9bfe4",
+      "object": "57d716ed776bbf81087633c507fb5bd145cc8490",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/eta-register.md": {
+      "sha256": "adeda18823f2d52d82f17c5c029bd883a504205cf8757f2a7ee5237e5d1cd109",
+      "object": "7b4c174dd15636f9a6e29d16429dae28cd5d3464",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/feasibility-report.md": {
+      "sha256": "10fe5879b55d78b9a06b24589328fb2517eb0defd4f6e465b23ca0f6f833b63b",
+      "object": "d1946e5b6972b3339561d8dad5ffdd9ae7c244fe",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/functional-tests.md": {
+      "sha256": "760e46dd617e449ff8993dad3a98ce8c4e95e928dbf63c1b00017bff1d3ebdf3",
+      "object": "aba3b4b1cc9877dd5e9da69fb9a7c4ae4ea6f12a",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/generic-output.md": {
+      "sha256": "67e01f4cc8cfd624400128a7f16e50ab62a98d52a920b0f5e9a0fcea2607759a",
+      "object": "ae96106e5a4d88d2fdc2d1549452306b4e4cf2a3",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/generic-output.yml": {
+      "sha256": "6d57e9ed847259d3671f61f737eaad7604c2952cb5268da25f701b1facffcdd4",
+      "object": "2b6e4aba5ea5c73ebf85408848b42ffae5f24e19",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/implementation-index.md": {
+      "sha256": "8d3c8cdf27fe2aebf9991858836fc3bb7b37d902afa5638616c67a9c9961dca0",
+      "object": "0194a0edee0ebdf1e4d3330dda68f33ec4fe8852",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/initiative-conformance.md": {
+      "sha256": "d5270e19131d7c2a1bdb6d447a1ed04017f80ba77ad3703f35c5462ee67a2801",
+      "object": "9f3f9c34742646ea2dc9c28ac75321e01732a600",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/initiative-scope.md": {
+      "sha256": "142478e091855e712667f23038ffd40a92e4f86b0e665427f27361d74b1ab489",
+      "object": "7924221cd5d41e616ea88be811379e05ef137f79",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/intake-record.md": {
+      "sha256": "1dbd17ccf123ef632b1248963cc1ad36786b96efa8879278322e77aecc2eeabb",
+      "object": "85265cc0f1f62fceb3ee8b01dd291b0480da8509",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/interface-contract.md": {
+      "sha256": "fb047de3b81b417eb257862840e7cd9b07d533d70711301bf904272124954053",
+      "object": "f2cd74b816703640405ee9fd6e86374df8a18caa",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/measurement-plan.md": {
+      "sha256": "dac7671ee00e4207d5b25a520935fe536767b66219b21cf405872affb0d16187",
+      "object": "6fefbc660933feb707ef982f57aa6b440c6324ea",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/nfr-assessment.md": {
+      "sha256": "fdbdd138b0a6c1d3ae03acf1a624c42aa074c802a5c25dc8c36ceadb8db3e46a",
+      "object": "50603be006ad19682466179fc5389f4817f11a20",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/nfr-specification.md": {
+      "sha256": "b98bb5b743576d4cc55f1f508b5d7489a9a85eee72c9af4f93ce71b396fc454c",
+      "object": "e09e2d7a6c613b9b897e885f464bc48925d11d7f",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/observability-handoff.md": {
+      "sha256": "41787345e0e77b79e0d3ff5878d3d61f018e42cf65d66681d14fdfa014e2750a",
+      "object": "b9bca0d937e4b712c74bb2a274116c5eefa1a1cc",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/operational-readiness.md": {
+      "sha256": "d8890590723c5cdff0ffe5225f5e88e8d2d5cde8f7b3805e3568393162ff5c31",
+      "object": "fb1358e6b44e0acb9d054b7bacb7693cc3be2ee5",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/opportunity-brief.md": {
+      "sha256": "1896ad72afd98908b599e3ae5d81de6843df2601e91b6bd4e813a0768dff7b6a",
+      "object": "ef1e8eadef608a8dd5f3d8a5f893d07744c350d6",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/poc-results.md": {
+      "sha256": "40aba41fdfc6b2f4c748976082801e85e1bef84b80fe300980cc50fa3d0c89f7",
+      "object": "27f88508d1b3f544e695e9fd51b9826165bc92a0",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/prfaq.md": {
+      "sha256": "b2dcba973be8992f52373720ba5af959b233e3a6059bfa07e26a9797a23cc22f",
+      "object": "a39fff6671164aa39509c9831a4d47931b9fd467",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/product-roadmap.md": {
+      "sha256": "34a3df88bd97e0637cab02564f54ff98cccc776d5267ad6d85a3d063849e6cd1",
+      "object": "6f3bb7193d6925a80d375803265cd81778266d40",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/production-learning.md": {
+      "sha256": "5e090b0e8a4821698af7b86052d43c970e009b8c64bcb3ddfb8b5ac8bf57c50f",
+      "object": "04b575ee30494deff153320962ed49da014caa95",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/production-validation.md": {
+      "sha256": "8ce5dd20813d422778c1921a7658793b0b63640fe2b00af3ecca1a15cc08f56f",
+      "object": "eab17caaeebabd4ae425ddf6af5cda38332844d6",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/release-scope.md": {
+      "sha256": "56ef6617316bbbe052a595dafed210f5acf854d7426cb9420e89e1269038552d",
+      "object": "f7e207b621f4e679332a2ff2d617926faf825faf",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/requirement-impact.md": {
+      "sha256": "f3afdcc90c5bd4e7d8c8218070b6bdac58f22d5dd787d288b515495e883dd1ff",
+      "object": "46806e88f432948fe7827aa7a0b0e7b6d139c0b9",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/sequencing-plan.md": {
+      "sha256": "832d7d8e9820482b7263b87e9305a98037bd971e4a34a5c65e7d8c5cd5fd30b3",
+      "object": "a2a203e2706d4584ef49874f322a44daf6479395",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/service-blueprint.md": {
+      "sha256": "36424028305ca3a95f355249783090907e9fab5620eed93a9537b777af33ccbf",
+      "object": "eec22f0d0ba616a8a1ea53097d82c316a7172a58",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/solution-architecture.md": {
+      "sha256": "699d6646a25f65bb7967081dced900e3c5235e16613089e54bb002f184e67862",
+      "object": "b494bf55a4466f23a863fad7b0966255f73f4103",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/solution-validation.md": {
+      "sha256": "9e025f84f9ebdcc5a56d1a0ae5aa044e5e0f04ec3857ba72c18afee2a209052a",
+      "object": "b9098bb129f91c3ce5cdd83bc88582dabfde37ad",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/stakeholder-raci.md": {
+      "sha256": "7aa9d81064f4e41f5756ab2d0df1e1777c7b83530ff54f994823c359292f20c7",
+      "object": "8de34736a12018c1e3047a260ed013faa7fc9217",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/technical-poc-results.md": {
+      "sha256": "7fbe8d0159e55a79548d6a56cbb5e1990086c5abb821735c3a197bb95f9922de",
+      "object": "8a8137a8dade8737b8cf0f4692cddfe0bfdc9d8c",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/test-attestation.md": {
+      "sha256": "28fe58500e6d21aa1816494ce8ef6c15b16c30da9d5f04c30f8c1f97554be822",
+      "object": "a074e26fd52d0cafc90f80dc390c4566fb2ca8b5",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/test-data-inventory.md": {
+      "sha256": "3377bd930d736890c16ecff4c1f1ec81ee83636e609aa61e95d29a5449793419",
+      "object": "0a9c98c6bcf0d5ee9fe7b313cc25d7196ce4b488",
+      "mode": "100644"
+    },
+    "singularity/templates/initiatives/ux-concept.md": {
+      "sha256": "d12e90b0412fcf41cf07fec6bcfe8c83d80949fc01fec2973d23a24a62e73b89",
+      "object": "1dd62a79bec767451fa301288ba9528761da3daf",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/impact-analysis.md": {
+      "sha256": "16b58133b53c74c225f9e0a10b36301678d3ae5cd1a2686f23d1cbe414ec6c93",
+      "object": "9133a1a4a4195768273335216f0de88d71dfabbd",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/intake.md": {
+      "sha256": "5526ca2db4273e0c0972fb19a5637353c2a7c461bf4a09e472921367ab4eda2b",
+      "object": "6e213945156e7be4e00e883ed2769a882cb7cfef",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/publication-review.md": {
+      "sha256": "e5d0e59595e5dd01899883adf781a728bdc6636a07efe4290b57c55b808288d1",
+      "object": "01e0d181df8ba1cd3eae5c169bba0cc1ed0e05c3",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/test-generation.md": {
+      "sha256": "6fa0c17056fe263eb9f47699a84a0759a899b8e67c35a3d53df8961f1ca59b25",
+      "object": "21c377fad4f73e3a16bc69c64a54155b66b44ff8",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/ui-exploration.md": {
+      "sha256": "4b497582f8d460ccfa887bd9b51cb62ef240a568d34e53c7950b8d58434c60e8",
+      "object": "55f154cda6cce9e72ee01c523dca3dacdbd839d4",
+      "mode": "100644"
+    },
+    "singularity/templates/poc-workflow/validation.md": {
+      "sha256": "b1d121afbd49c09538d221cbac60b352a21f7eb7699bc4cba08d35b88ba47fb6",
+      "object": "c6308dc95e89fcd8a4774b3e866c513f64f8f239",
+      "mode": "100644"
+    },
+    "singularity/templates/quick-fix/implement.md": {
+      "sha256": "dff093133a1be4c93115cfbbb0d994c8ce391fc19279caee30b441ec27a05c0a",
+      "object": "60b362b7b290d0f7e25b70440a8ea548b568def8",
+      "mode": "100644"
+    },
+    "singularity/templates/quick-fix/verify.md": {
+      "sha256": "a21900d99d044d35de501f0e43888a8a3ebcfe860e702a5d1b3eec61fdd06f27",
+      "object": "3ee84e3b6d5dca6c58afefd4d1797abee3c6ab61",
+      "mode": "100644"
+    },
+    "singularity/templates/spec-driven/convergence.md": {
+      "sha256": "eb257477afca0229ed858875499736c57498015aaee0a527b714356819a9dde2",
+      "object": "8dbf32e1337f74f222f093a3a76f9c93fca72fa9",
+      "mode": "100644"
+    },
+    "singularity/templates/spec-driven/plan.md": {
+      "sha256": "069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a",
+      "object": "e699822df66992daf869a042f0c2148b34c3c30c",
+      "mode": "100644"
+    },
+    "singularity/templates/spec-driven/release.md": {
+      "sha256": "ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908",
+      "object": "f119bb1881e8de30f429f0361442c0da28b4e12c",
+      "mode": "100644"
+    },
+    "singularity/templates/spec-driven/spec.md": {
+      "sha256": "27424a624b1dab57323fd7482ac62708bd42d11ba42e41c102f94e15182fe485",
+      "object": "fab042e3a6b7b83fa6986644e05e9e898d1fb6d0",
+      "mode": "100644"
+    },
+    "singularity/workflow.yml": {
+      "sha256": "bc676cf23b37d825ef07110214580374e2dfe941c9fb8fc8c4f64a87eeef5e0a",
+      "object": "7ba27e0f9d23170fba3b054fdfbc745b33c58078",
+      "mode": "100644"
+    }
   }
 }
