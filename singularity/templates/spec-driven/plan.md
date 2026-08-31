@@ -32,12 +32,16 @@ TODO: State the implementation order and what each step unblocks.
 
 ## Test strategy
 
-TODO: Explain how each requirement will be proved. A requirement with no stated means of proof is a
-requirement that will be argued about at verification.
+TODO: Explain how each authoritative clause will be proved. Add exactly one row per clause, using its
+fully qualified ID (for example, `{{work.id}}:REQ-001`, never only `REQ-001`). `Expected paths` and
+`Planned tests` must contain exact repository-relative paths in backticks; directories, globs, module
+names, and prose are not paths. Multiple exact paths may be listed as separate backticked values.
+For a genuinely non-testable clause, write `not-applicable:` followed by your concrete reviewed
+explanation in `Planned tests`. Do not use it to defer a test or to replace an unknown path.
 
-| Clause | Proof |
-|---|---|
-| [{{work.id}}:REQ-001] | <test, check, or evidence> |
+| Clause | Expected paths | Planned tests |
+|---|---|---|
+| `{{work.id}}:REQ-001` | `src/path/to/source.ext` | `test/path/to/source.test.ext` |
 
 ## Constitution articles
 

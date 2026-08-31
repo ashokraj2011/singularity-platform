@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 3b5d79e6ddb0984d1ec0b80bfc1e59ab83bfde01
+  revision: 5489e1c3ef51402bbbebce142da1070cf5d0d8ca
 workflow:
   version: 2
   inputsMode: enforce
@@ -1949,7 +1949,7 @@ assets:
   singularity/templates/bugfix/fix-design.md:
     sha256: cee7774777fd55a3740ebd9f2cafd100702d52617ae307f80e35764229c7867e
   singularity/templates/bugfix/fix-spec.md:
-    sha256: 68c6ce36d11ab08ec96a676f60d2f143321070a108fef804c552aae1f50776e0
+    sha256: 7444db4d7023e9caecf661dba44c2c6d353530c08372928ab642d0494a80c038
   singularity/templates/bugfix/intake.md:
     sha256: c0aa89555e400e9c78c782021b1928175607f32ad20773c70fae04b28ced320c
   singularity/templates/bugfix/reproduction.md:
@@ -1967,7 +1967,7 @@ assets:
   singularity/templates/feature/design.md:
     sha256: 8b7455f464a7025efa92942c272a04e3c0a3ab2a4d3eb438703cc14e230bc856
   singularity/templates/feature/implementation-spec.md:
-    sha256: f6b06a7e8c8dfa87a7f1289b2a80c0a6e98f5ee8e3cae2fe9faed501c031656c
+    sha256: 7af32c5b973fe241ca6dd22e7ba2feeb17289ac85d28ade00ffe204497d49ab6
   singularity/templates/feature/intake.md:
     sha256: eb53814f46f12ea3d93d1629164bd7ff22a3a54feceff7f7dd55670caeb5dbab
   singularity/templates/feature/requirements.md:
@@ -2109,7 +2109,7 @@ assets:
   singularity/templates/spec-driven/convergence.md:
     sha256: eb257477afca0229ed858875499736c57498015aaee0a527b714356819a9dde2
   singularity/templates/spec-driven/plan.md:
-    sha256: 069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a
+    sha256: b325ecc7b6eae0840f00b9b52e518827394ad72e126879ccd86058e6a21a57fb
   singularity/templates/spec-driven/release.md:
     sha256: ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908
   singularity/templates/spec-driven/spec.md:
