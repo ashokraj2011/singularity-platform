@@ -126,6 +126,10 @@ ast:
     maxFileBytes: 2097152
 auto:
   enabled: false
+  profile:
+    default: story
+    allowed:
+      - story
   defaultPace: phase
   defaultUntil: first-human-boundary
   workIdAllocator: ulid
