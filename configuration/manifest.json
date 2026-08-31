@@ -3,15 +3,15 @@
   "layout": "canonical-paths",
   "source": {
     "branch": "sflow/config",
-    "commit": "e563c971681fa022d1d0feb70467cc6cb826b5a8"
+    "commit": "d3ead6a51f953951893418e78a847403e20b76a9"
   },
   "history": {
-    "branch": "sflow/config-history/e563c971681fa022d1d0feb70467cc6cb826b5a8",
-    "commit": "e563c971681fa022d1d0feb70467cc6cb826b5a8"
+    "branch": "sflow/config-history/d3ead6a51f953951893418e78a847403e20b76a9",
+    "commit": "d3ead6a51f953951893418e78a847403e20b76a9"
   },
   "product": {
     "version": "0.9.0",
-    "revision": "3b5d79e6ddb0984d1ec0b80bfc1e59ab83bfde01"
+    "revision": "5489e1c3ef51402bbbebce142da1070cf5d0d8ca"
   },
   "files": {
     ".github/agents/architect.agent.md": "da4f136ae11c0cb459500d4008a5629797f168ec4df87ba807da31c12a59c467",
@@ -38,7 +38,7 @@
     "singularity/templates/benchmark/intake.md": "3a4a6c9b16d20e2b3b90930bc72c11fe63d74e241f9de3819674b6da460a0677",
     "singularity/templates/benchmark/testing.md": "a9338f04dbe1be3ad988c331f9b45bab335a4661fb367f2c4f110609049fb9a8",
     "singularity/templates/bugfix/fix-design.md": "cee7774777fd55a3740ebd9f2cafd100702d52617ae307f80e35764229c7867e",
-    "singularity/templates/bugfix/fix-spec.md": "68c6ce36d11ab08ec96a676f60d2f143321070a108fef804c552aae1f50776e0",
+    "singularity/templates/bugfix/fix-spec.md": "7444db4d7023e9caecf661dba44c2c6d353530c08372928ab642d0494a80c038",
     "singularity/templates/bugfix/intake.md": "c0aa89555e400e9c78c782021b1928175607f32ad20773c70fae04b28ced320c",
     "singularity/templates/bugfix/reproduction.md": "083e0361f6ffe9e84905b21558554c8335ab1a036719cb37f104e03f255f3567",
     "singularity/templates/chore/intake.md": "d4632690fa411f3926eee1bfd474f5907aae5efdd31313576acdac04e8934441",
@@ -47,7 +47,7 @@
     "singularity/templates/common/intake.md": "e16cd8b47f472973823a1a53294c77ac6551285c4df75e916c739611c3bc1d23",
     "singularity/templates/common/verification.md": "46a93cccc0edf7b3d878f05f212ed68350c26cedb33d96b3c447ac38bde20c40",
     "singularity/templates/feature/design.md": "8b7455f464a7025efa92942c272a04e3c0a3ab2a4d3eb438703cc14e230bc856",
-    "singularity/templates/feature/implementation-spec.md": "f6b06a7e8c8dfa87a7f1289b2a80c0a6e98f5ee8e3cae2fe9faed501c031656c",
+    "singularity/templates/feature/implementation-spec.md": "7af32c5b973fe241ca6dd22e7ba2feeb17289ac85d28ade00ffe204497d49ab6",
     "singularity/templates/feature/intake.md": "eb53814f46f12ea3d93d1629164bd7ff22a3a54feceff7f7dd55670caeb5dbab",
     "singularity/templates/feature/requirements.md": "32016db8ed6fadd6596e7dc702647cff95cdee1a203b38395d7ba5626dd8134e",
     "singularity/templates/figma-mobile/component-mapping.md": "cdea8a1e3defa73ade72bdaaac162ecd9b8b43817aa319d7e712e2de2eb296a3",
@@ -118,7 +118,7 @@
     "singularity/templates/quick-fix/implement.md": "dff093133a1be4c93115cfbbb0d994c8ce391fc19279caee30b441ec27a05c0a",
     "singularity/templates/quick-fix/verify.md": "a21900d99d044d35de501f0e43888a8a3ebcfe860e702a5d1b3eec61fdd06f27",
     "singularity/templates/spec-driven/convergence.md": "eb257477afca0229ed858875499736c57498015aaee0a527b714356819a9dde2",
-    "singularity/templates/spec-driven/plan.md": "069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a",
+    "singularity/templates/spec-driven/plan.md": "b325ecc7b6eae0840f00b9b52e518827394ad72e126879ccd86058e6a21a57fb",
     "singularity/templates/spec-driven/release.md": "ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908",
     "singularity/templates/spec-driven/spec.md": "27424a624b1dab57323fd7482ac62708bd42d11ba42e41c102f94e15182fe485",
     "singularity/workflow.yml": "bc676cf23b37d825ef07110214580374e2dfe941c9fb8fc8c4f64a87eeef5e0a"
@@ -245,8 +245,8 @@
       "mode": "100644"
     },
     "singularity/templates/bugfix/fix-spec.md": {
-      "sha256": "68c6ce36d11ab08ec96a676f60d2f143321070a108fef804c552aae1f50776e0",
-      "object": "f82ccc3bcd3b5055a701c3757542863861be86e3",
+      "sha256": "7444db4d7023e9caecf661dba44c2c6d353530c08372928ab642d0494a80c038",
+      "object": "b940e0ac34c18281a56a53c4dd37650676449f48",
       "mode": "100644"
     },
     "singularity/templates/bugfix/intake.md": {
@@ -290,8 +290,8 @@
       "mode": "100644"
     },
     "singularity/templates/feature/implementation-spec.md": {
-      "sha256": "f6b06a7e8c8dfa87a7f1289b2a80c0a6e98f5ee8e3cae2fe9faed501c031656c",
-      "object": "345ccc99270d384bd3fad073f81c4c3733a1ac6f",
+      "sha256": "7af32c5b973fe241ca6dd22e7ba2feeb17289ac85d28ade00ffe204497d49ab6",
+      "object": "87fed7a92c19c66be7d58843ac75d262ff94a4f7",
       "mode": "100644"
     },
     "singularity/templates/feature/intake.md": {
@@ -645,8 +645,8 @@
       "mode": "100644"
     },
     "singularity/templates/spec-driven/plan.md": {
-      "sha256": "069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a",
-      "object": "e699822df66992daf869a042f0c2148b34c3c30c",
+      "sha256": "b325ecc7b6eae0840f00b9b52e518827394ad72e126879ccd86058e6a21a57fb",
+      "object": "ddf05a34fa8ed4d2b3aa572a455cb080e857fb0d",
       "mode": "100644"
     },
     "singularity/templates/spec-driven/release.md": {

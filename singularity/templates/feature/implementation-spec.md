@@ -1,10 +1,15 @@
 # {{work.id}} — Implementation Specification
 
-## Traceability
+## Planned implementation evidence
 
-| Clause | Acceptance criteria | Planned code/tests | Status |
-|---|---|---|---|
-| `{{work.id}}:IFC-001` | `{{work.id}}:AC-001` | TODO | planned |
+Add exactly one row for every authoritative clause. Use a fully qualified clause ID. List only exact
+repository-relative source and test paths in backticks; do not use directories, globs, module names,
+or prose in path cells. For a genuinely non-testable clause, write `not-applicable:` followed by
+your concrete reviewed explanation under `Planned tests`; never defer a test or replace an unknown path.
+
+| Clause | Expected paths | Planned tests |
+|---|---|---|
+| `{{work.id}}:IFC-001` | `src/path/to/source.ext` | `test/path/to/contract.test.ext` |
 
 ## APIs, schemas, and contracts
 
@@ -20,4 +25,5 @@ The implementation MUST satisfy the security, observability, migration, and roll
 
 ## Test specification
 
-TODO: Map every REQ/BEH/IFC/AC/CON clause to allowlisted tests and planned paths.
+TODO: Explain the tests recorded as exact paths in the planned implementation evidence table. Bind
+every test to its corresponding fully qualified REQ/BEH/IFC/AC/CON clause ID.
