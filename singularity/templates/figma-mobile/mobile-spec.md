@@ -8,13 +8,30 @@
 
 | Acceptance criterion | User-visible requirement | Screens/states | Verification |
 |---|---|---|---|
-| AC-001 | TODO | SCREEN-001 | TODO |
+| [{{work.id}}:AC-001] | TODO | SCREEN-001 | TODO |
 
 ## Specification traceability
 
 | Spec ID | Acceptance criteria | Screens/interactions | Component maps | Planned code/tests | Status |
 |---|---|---|---|---|---|
-| SPEC-001 | AC-001 | SCREEN-001 / INT-001 | MAP-001 | TODO | planned |
+| [{{work.id}}:IFC-001] | `{{work.id}}:AC-001` | SCREEN-001 / INT-001 | MAP-001 | TODO | planned |
+
+Add, remove, and renumber the example anchors so every approved mobile behavior and interface has
+one stable, fully qualified clause ID. Never leave a display-only `AC-001` or `SPEC-001` as the
+identity used by implementation or test evidence.
+
+## Planned implementation evidence
+
+Add exactly one row for every authoritative clause above. Use its fully qualified clause ID. List
+only exact repository-relative source and test paths in backticks; do not use directories, globs,
+module names, or prose in path cells. For a genuinely non-testable clause, write
+`not-applicable:` followed by your concrete reviewed explanation under `Planned tests`; never use
+that disposition to defer a test or replace a path that has not yet been identified.
+
+| Clause | Expected paths | Planned tests |
+|---|---|---|
+| `{{work.id}}:AC-001` | TODO: replace with exact backticked repository-relative source paths | TODO: replace with exact backticked repository-relative test paths |
+| `{{work.id}}:IFC-001` | TODO: replace with exact backticked repository-relative source paths | TODO: replace with exact backticked repository-relative test paths |
 
 ## Navigation and lifecycle contract
 
@@ -38,7 +55,7 @@ TODO: Specify semantics, labels, roles, focus order, touch targets, contrast, re
 
 | Spec ID | Module/file | Change | Reused component/token | Test target |
 |---|---|---|---|---|
-| SPEC-001 | TODO | TODO | MAP-001 / TODO | TODO |
+| `{{work.id}}:IFC-001` | TODO | TODO | MAP-001 / TODO | TODO |
 
 ## Security, privacy, telemetry, and failure behavior
 

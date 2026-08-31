@@ -1345,6 +1345,13 @@ workTypes:
       - implementation
       - verification
       - conformance
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - requirements
+        - implementation-spec
+      owners:
+        implementation: implementation-spec
     templateOverrides:
       intake: feature/intake.md
       requirements: feature/requirements.md
@@ -1384,6 +1391,12 @@ workTypes:
       - implementation
       - verification
       - conformance
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - fix-spec
+      owners:
+        implementation: fix-spec
     templateOverrides:
       intake: bugfix/intake.md
       reproduction: bugfix/reproduction.md
@@ -1444,6 +1457,12 @@ workTypes:
       - implementation
       - visual-verification
       - conformance
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - mobile-spec
+      owners:
+        implementation: mobile-spec
     designSources:
       capturePhase: design-intake
       consumeIn:
@@ -1531,6 +1550,10 @@ workTypes:
     phases:
       - implement
       - verify
+    plannedClaims:
+      mode: opt-out
+      reason: This low-risk two-phase profile intentionally has no approved pre-code
+        specification phase.
     templateOverrides:
       implement: quick-fix/implement.md
       verify: quick-fix/verify.md
@@ -1548,6 +1571,12 @@ workTypes:
       - implementation
       - testing
       - conformance
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - intake
+      owners:
+        implementation: design
     intelligence:
       worldModel: required
       ast: optional-context
@@ -1559,6 +1588,9 @@ workTypes:
       testing: benchmark/testing.md
       conformance: benchmark/conformance.md
     phaseOverrides:
+      intake:
+        artifact:
+          kind: requirements
       design:
         inputs:
           - phase: intake
@@ -1653,6 +1685,12 @@ workTypes:
       - implementation
       - testing
       - conformance
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - intake
+      owners:
+        implementation: design
     intelligence:
       worldModel: off
       ast: off
@@ -1665,6 +1703,8 @@ workTypes:
       conformance: benchmark/conformance.md
     phaseOverrides:
       intake:
+        artifact:
+          kind: requirements
         worldModel:
           views: []
       design:
@@ -1717,6 +1757,12 @@ workTypes:
       - poc-test-generation
       - poc-validation
       - poc-publication-review
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - poc-intake
+      owners:
+        poc-test-generation: poc-ui-exploration
     templateOverrides:
       poc-intake: poc-workflow/intake.md
       poc-impact-analysis: poc-workflow/impact-analysis.md
@@ -1725,6 +1771,9 @@ workTypes:
       poc-validation: poc-workflow/validation.md
       poc-publication-review: poc-workflow/publication-review.md
     phaseOverrides:
+      poc-intake:
+        artifact:
+          kind: requirements
       poc-impact-analysis:
         inputs:
           - poc-intake
@@ -1753,6 +1802,12 @@ workTypes:
     label: Spec-Driven Standard
     spec:
       mode: enforce
+    plannedClaims:
+      mode: required
+      clausePhases:
+        - specification
+      owners:
+        implementation: planning
     phases:
       - specification
       - planning

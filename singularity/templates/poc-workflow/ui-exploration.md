@@ -41,3 +41,17 @@ state at one viewport, not proof of every browser or responsive layout.
 
 List states that were not observed, why they were unavailable, and whether generation may proceed.
 Separate application defects, access blockers, environment failures, and unknown expectations.
+
+## Planned test generation evidence
+
+Translate the approved `[POC:AC-nnn]` clauses and observed material risks into the exact repository
+contract for the next test-generation phase. Add exactly one row for every authoritative clause,
+using its fully qualified ID. List only exact repository-relative source and test paths in backticks;
+do not use directories, globs, module names, or prose in path cells. Here, `Expected paths` identifies
+the repository-owned test seam or helper expected to change; it never authorizes product-code changes.
+For a genuinely non-testable clause, write `not-applicable:` followed by your concrete reviewed
+explanation under `Planned tests`; never defer a test or replace an unknown path with that disposition.
+
+| Clause | Expected paths | Planned tests |
+|---|---|---|
+| `POC:AC-001` | TODO: replace with exact backticked repository-relative test-automation paths | TODO: replace with exact backticked repository-relative Playwright test paths |

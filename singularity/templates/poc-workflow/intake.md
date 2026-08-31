@@ -55,6 +55,13 @@ Each criterion must name an observable journey, state, or quality property and i
 Include positive, negative, accessibility, visual, and boundary behavior only when applicable; do
 not manufacture scenarios merely to fill categories.
 
+| Authoritative clause | Observable journey or property | Expected result | In scope |
+|---|---|---|---|
+| [POC:AC-001] | TODO: replace with the approved observable journey or quality property | TODO: replace with its measurable expected result | yes/no |
+
+Add, remove, and renumber rows to match the approved POC intent. Keep every anchor fully qualified
+as `POC:AC-nnn`; later exploration, generated tests, validation, and review must cite these exact IDs.
+
 ## Safety and access
 
 - Confirm the target is authorized for automated interaction and identify prohibited actions.
