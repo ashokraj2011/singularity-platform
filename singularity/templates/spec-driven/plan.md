@@ -41,7 +41,7 @@ explanation in `Planned tests`. Do not use it to defer a test or to replace an u
 
 | Clause | Expected paths | Planned tests |
 |---|---|---|
-| `{{work.id}}:REQ-001` | `src/path/to/source.ext` | `test/path/to/source.test.ext` |
+| `{{work.id}}:REQ-001` | TODO: replace with exact backticked repository-relative source paths | TODO: replace with exact backticked repository-relative test paths |
 
 ## Constitution articles
 

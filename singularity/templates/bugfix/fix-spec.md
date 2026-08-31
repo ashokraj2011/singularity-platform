@@ -9,7 +9,7 @@ your concrete reviewed explanation under `Planned tests`; never defer a regressi
 
 | Clause | Expected paths | Planned tests |
 |---|---|---|
-| `{{work.id}}:BEH-001` | `src/path/to/source.ext` | `test/path/to/regression.test.ext` |
+| `{{work.id}}:BEH-001` | TODO: replace with exact backticked repository-relative source paths | TODO: replace with exact backticked repository-relative regression test paths |
 
 ## Exact change
 

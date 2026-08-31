@@ -9,7 +9,7 @@ your concrete reviewed explanation under `Planned tests`; never defer a test or 
 
 | Clause | Expected paths | Planned tests |
 |---|---|---|
-| `{{work.id}}:IFC-001` | `src/path/to/source.ext` | `test/path/to/contract.test.ext` |
+| `{{work.id}}:IFC-001` | TODO: replace with exact backticked repository-relative source paths | TODO: replace with exact backticked repository-relative test paths |
 
 ## APIs, schemas, and contracts
 

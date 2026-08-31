@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 5489e1c3ef51402bbbebce142da1070cf5d0d8ca
+  revision: fb785cbb053405594c8fa910250595083469deb9
 workflow:
   version: 2
   inputsMode: enforce
@@ -393,6 +393,13 @@ workflow:
         - implementation
         - verification
         - conformance
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - requirements
+          - implementation-spec
+        owners:
+          implementation: implementation-spec
       templateOverrides:
         intake: feature/intake.md
         requirements: feature/requirements.md
@@ -432,6 +439,12 @@ workflow:
         - implementation
         - verification
         - conformance
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - fix-spec
+        owners:
+          implementation: fix-spec
       templateOverrides:
         intake: bugfix/intake.md
         reproduction: bugfix/reproduction.md
@@ -492,6 +505,12 @@ workflow:
         - implementation
         - visual-verification
         - conformance
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - mobile-spec
+        owners:
+          implementation: mobile-spec
       designSources:
         capturePhase: design-intake
         consumeIn:
@@ -579,6 +598,10 @@ workflow:
       phases:
         - implement
         - verify
+      plannedClaims:
+        mode: opt-out
+        reason: This low-risk two-phase profile intentionally has no approved pre-code
+          specification phase.
       templateOverrides:
         implement: quick-fix/implement.md
         verify: quick-fix/verify.md
@@ -596,6 +619,12 @@ workflow:
         - implementation
         - testing
         - conformance
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - intake
+        owners:
+          implementation: design
       intelligence:
         worldModel: required
         ast: optional-context
@@ -607,6 +636,9 @@ workflow:
         testing: benchmark/testing.md
         conformance: benchmark/conformance.md
       phaseOverrides:
+        intake:
+          artifact:
+            kind: requirements
         design:
           inputs:
             - phase: intake
@@ -701,6 +733,12 @@ workflow:
         - implementation
         - testing
         - conformance
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - intake
+        owners:
+          implementation: design
       intelligence:
         worldModel: off
         ast: off
@@ -713,6 +751,8 @@ workflow:
         conformance: benchmark/conformance.md
       phaseOverrides:
         intake:
+          artifact:
+            kind: requirements
           worldModel:
             views: []
         design:
@@ -765,6 +805,12 @@ workflow:
         - poc-test-generation
         - poc-validation
         - poc-publication-review
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - poc-intake
+        owners:
+          poc-test-generation: poc-ui-exploration
       templateOverrides:
         poc-intake: poc-workflow/intake.md
         poc-impact-analysis: poc-workflow/impact-analysis.md
@@ -773,6 +819,9 @@ workflow:
         poc-validation: poc-workflow/validation.md
         poc-publication-review: poc-workflow/publication-review.md
       phaseOverrides:
+        poc-intake:
+          artifact:
+            kind: requirements
         poc-impact-analysis:
           inputs:
             - poc-intake
@@ -801,6 +850,12 @@ workflow:
       label: Spec-Driven Standard
       spec:
         mode: enforce
+      plannedClaims:
+        mode: required
+        clausePhases:
+          - specification
+        owners:
+          implementation: planning
       phases:
         - specification
         - planning
@@ -1939,17 +1994,17 @@ assets:
   singularity/templates/benchmark/conformance.md:
     sha256: 41484584d35ff0c2e214e8f9592b105bba95bc36b38dba919754b54380851a2b
   singularity/templates/benchmark/design.md:
-    sha256: d7327667a93ea9a5e536032610b314bdd681144d1ef9c5762f04d34dca5dee51
+    sha256: 92ba1c0684e20d201a7bfa1c9ae7b61a87001ca0c724ff0a61af2d387b23f9ba
   singularity/templates/benchmark/implementation.md:
     sha256: e25ab3d9104c4ddaef541191d544ea032c35f551b9538ad77a38628ca1a58db6
   singularity/templates/benchmark/intake.md:
-    sha256: 3a4a6c9b16d20e2b3b90930bc72c11fe63d74e241f9de3819674b6da460a0677
+    sha256: 49107281e2e461ede0e000edb51bf9f22aec85ddc84acbd1781680076f795f5c
   singularity/templates/benchmark/testing.md:
     sha256: a9338f04dbe1be3ad988c331f9b45bab335a4661fb367f2c4f110609049fb9a8
   singularity/templates/bugfix/fix-design.md:
     sha256: cee7774777fd55a3740ebd9f2cafd100702d52617ae307f80e35764229c7867e
   singularity/templates/bugfix/fix-spec.md:
-    sha256: 7444db4d7023e9caecf661dba44c2c6d353530c08372928ab642d0494a80c038
+    sha256: c1bbc5602eded66e1387f3fa95a835d7bb49f05a2fd813b193c0cada7c420c87
   singularity/templates/bugfix/intake.md:
     sha256: c0aa89555e400e9c78c782021b1928175607f32ad20773c70fae04b28ced320c
   singularity/templates/bugfix/reproduction.md:
@@ -1967,7 +2022,7 @@ assets:
   singularity/templates/feature/design.md:
     sha256: 8b7455f464a7025efa92942c272a04e3c0a3ab2a4d3eb438703cc14e230bc856
   singularity/templates/feature/implementation-spec.md:
-    sha256: 7af32c5b973fe241ca6dd22e7ba2feeb17289ac85d28ade00ffe204497d49ab6
+    sha256: adc2b93c3cf849c4b335237cea68c05fc2fdeb4ef087a8b4236493be574a0a37
   singularity/templates/feature/intake.md:
     sha256: eb53814f46f12ea3d93d1629164bd7ff22a3a54feceff7f7dd55670caeb5dbab
   singularity/templates/feature/requirements.md:
@@ -1983,7 +2038,7 @@ assets:
   singularity/templates/figma-mobile/implementation.md:
     sha256: 69b5b75886dcc41da4e3063c7ceb6ff805251f98dd40ee41b2bf5de660dc74da
   singularity/templates/figma-mobile/mobile-spec.md:
-    sha256: 88b61e823b202feb62b8c1eccbe09fdc0b78c3b68d1f20f24adb4e3d16098cee
+    sha256: 18c583c10c597c595cd0be9c11ddf16e92a0b85147efcd4fd3fb1a9bbd96fc44
   singularity/templates/figma-mobile/visual-verification.md:
     sha256: aca2f864d6cc1b5321e466f80d0751ab4874049271b2fabab03dde7b0ec0e835
   singularity/templates/initiatives/adr-log.md:
@@ -2093,13 +2148,13 @@ assets:
   singularity/templates/poc-workflow/impact-analysis.md:
     sha256: 16b58133b53c74c225f9e0a10b36301678d3ae5cd1a2686f23d1cbe414ec6c93
   singularity/templates/poc-workflow/intake.md:
-    sha256: 5526ca2db4273e0c0972fb19a5637353c2a7c461bf4a09e472921367ab4eda2b
+    sha256: 511fa3a7c281bf8a4c84977668478392b5f73d14273d3149db6392eeba3b805d
   singularity/templates/poc-workflow/publication-review.md:
     sha256: e5d0e59595e5dd01899883adf781a728bdc6636a07efe4290b57c55b808288d1
   singularity/templates/poc-workflow/test-generation.md:
     sha256: 6fa0c17056fe263eb9f47699a84a0759a899b8e67c35a3d53df8961f1ca59b25
   singularity/templates/poc-workflow/ui-exploration.md:
-    sha256: 4b497582f8d460ccfa887bd9b51cb62ef240a568d34e53c7950b8d58434c60e8
+    sha256: 14d107cc9778b9e737327e363e84e60975076a7003016d0798e92496ef1d61f5
   singularity/templates/poc-workflow/validation.md:
     sha256: b1d121afbd49c09538d221cbac60b352a21f7eb7699bc4cba08d35b88ba47fb6
   singularity/templates/quick-fix/implement.md:
@@ -2109,7 +2164,7 @@ assets:
   singularity/templates/spec-driven/convergence.md:
     sha256: eb257477afca0229ed858875499736c57498015aaee0a527b714356819a9dde2
   singularity/templates/spec-driven/plan.md:
-    sha256: b325ecc7b6eae0840f00b9b52e518827394ad72e126879ccd86058e6a21a57fb
+    sha256: e8af98405a723a55c572c705e34a5b2fc05a11b3efe632e169ba6becf6c1a04f
   singularity/templates/spec-driven/release.md:
     sha256: ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908
   singularity/templates/spec-driven/spec.md:
