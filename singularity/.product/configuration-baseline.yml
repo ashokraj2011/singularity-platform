@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: fb785cbb053405594c8fa910250595083469deb9
+  revision: 2bb51fa6eeccfda6f4dc6adf838d6db1521978c6
 workflow:
   version: 2
   inputsMode: enforce
@@ -32,6 +32,10 @@ workflow:
   idPattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
   auto:
     enabled: false
+    profile:
+      default: story
+      allowed:
+        - story
     defaultPace: phase
     defaultUntil: first-human-boundary
     workIdAllocator: ulid
