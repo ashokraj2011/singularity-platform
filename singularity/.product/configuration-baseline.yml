@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 2bb51fa6eeccfda6f4dc6adf838d6db1521978c6
+  revision: c50205ca147afc708b68cc7c43e0d1f633ff4acc
 workflow:
   version: 2
   inputsMode: enforce
@@ -49,6 +49,9 @@ workflow:
       allowClarificationAnswers: false
       allowSequenceOverrides: false
       allowScopeExpansion: false
+    repair:
+      policy: ask
+      maximumAttempts: 1
   adhoc:
     enabled: true
     entry:
