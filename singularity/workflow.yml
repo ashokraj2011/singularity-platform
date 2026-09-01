@@ -143,6 +143,9 @@ auto:
     allowClarificationAnswers: false
     allowSequenceOverrides: false
     allowScopeExpansion: false
+  repair:
+    policy: ask
+    maximumAttempts: 1
 codeDelivery:
   schemaVersion: 2
   mode: enforce
